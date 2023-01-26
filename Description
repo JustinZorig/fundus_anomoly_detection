@@ -1,3 +1,5 @@
 Here we test the latent representations of the autoencoder by training and testing two classifier heads to the autoencoder's code.
 They are tasked with classifying the diabetic retinopathy grading and the quality rating of the EyeQ data. We combine the dr grading
-to be simply referable : {0,1} and non-referable: {2,3,4}. We use input image size of 128*128
+to be simply referable : {0,1} and non-referable: {2,3,4}. We use input image size of 128*128.
+
+We use dropout =0.3 for the classification heads
