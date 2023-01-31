@@ -174,10 +174,3 @@ class Autoencoder(nn.Module):
     def test_step(self, batch, batch_idx):
         loss = self._get_reconstruction_loss(batch)
         sel.log('test_loss, loss')
-
-
-
-
-
-
-
