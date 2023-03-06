@@ -13,6 +13,8 @@ from torchvision import transforms
 
 from autoencoder import Autoencoder
 from ffn import ffn_classifier
+from utils import to_one_hot, EarlyStopper
+
 import time
 import math 
 from sklearn.metrics import confusion_matrix, classification_report
@@ -27,34 +29,39 @@ num_epochs=1
 batch_size = 100
 lr = 0.001
 
-def to_one_hot(num_classes):
-   return lambda y: torch.zeros(num_classes, dtype=torch.float).scatter_(0, torch.tensor(y), value=1)
+
+mean = [0.4114,0.2679,0.1820]
+std= [0.3016,0.2077,0.1654]
 
 transform = transforms.Compose([
     transforms.ToTensor(),
-    transforms.Resize(128)
+    transforms.Resize(256),
+    transforms.Normalize(mean, std)
 ])
 
 dr_num_classes=2
 qual_num_classes=3
-dr_test_dataset = torchvision.datasets.ImageFolder(root = '/home/miplab/data/Kaggle_Eyepacs/dr_preprocessed/test',
+dr_test_dataset = torchvision.datasets.ImageFolder(root = '/home/miplab/data/Kaggle_Eyepacs/dr_preprocessed_balanced_no_rejects/test',
                                                  transform = transform,
                                                  target_transform= to_one_hot(dr_num_classes))
-dr_test_loader = DataLoader(dr_test_dataset, batch_size =8, shuffle = True, num_workers=4)
+dr_test_loader = DataLoader(dr_test_dataset, batch_size =32, shuffle = True, num_workers=20, pin_memory = True)
 
 qual_test_dataset = torchvision.datasets.ImageFolder(root = '/home/miplab/data/Kaggle_Eyepacs/qual_preprocessed/test',
                                                  transform = transform,
                                                  target_transform= to_one_hot(qual_num_classes))
-qual_test_loader = DataLoader(qual_test_dataset, batch_size =8, shuffle = True, num_workers=4)
+qual_test_loader = DataLoader(qual_test_dataset, batch_size =32, shuffle = True, num_workers=20, pin_memory=True)
 
-model = Autoencoder(base_channel_size=12, latent_dim= 100, input_size =128).to(device)
 
-dr_classifier = ffn_classifier(latent_dim=100, num_classes=dr_num_classes).to(device)
-qual_classifier = ffn_classifier(latent_dim=100, num_classes=qual_num_classes).to(device)
 
-model.load_state_dict(torch.load( os.path.join(save_path, 'trained_model2.pth'))) #os.path.join(save_path, 'trained_model2.pth')))
-dr_classifier.load_state_dict(torch.load(os.path.join(save_path, 'dr_classifier.pth')))
-qual_classifier.load_state_dict(torch.load(os.path.join(save_path, 'qual_classifier.pth')))
+model = Autoencoder(input_channels=3, input_resolution=256, hidden_layer_channels=[4,4,4,4],
+                     layer_repetitions=[4,4,4,4], conv_reduced_resolution=16, latent_dimension=200).to(device)
+
+dr_classifier = ffn_classifier(latent_dim=200, num_classes=dr_num_classes).to(device)
+qual_classifier = ffn_classifier(latent_dim=200, num_classes=qual_num_classes).to(device)
+
+model.load_state_dict(torch.load( os.path.join(save_path, 'resnet_autoencoder_perceptual_loss_200_guideline.pth'))) #os.path.join(save_path, 'trained_model2.pth')))
+dr_classifier.load_state_dict(torch.load(os.path.join(save_path, 'dr_classifier_perceptual_loss_200_batchnorm.pth')))
+qual_classifier.load_state_dict(torch.load(os.path.join(save_path, 'qual_classifier_perceptual_loss_200_batchnorm.pth')))
 
 
 print(model)
@@ -71,10 +78,9 @@ test_batch_size = 8
 
 def classifier_testing_loop(classifier, test_loader):
 
-    opt_dict = model.configure_optimizers()
-    classifier_opt_dict = classifier.configure_optimizers()
+ #   opt_dict = model.configure_optimizers()
+ #   classifier_opt_dict = classifier.configure_optimizers()
 
-    test_loss_list = []
     y_pred=[]
     y_true=[]
    
@@ -90,34 +96,27 @@ def classifier_testing_loop(classifier, test_loader):
         
         with torch.no_grad():
             test_loss= 0 
-            for batch, (batch_features, _) in enumerate(test_loader):
+            for batch_idx, (batch, target) in enumerate(test_loader):
     
                # test_loss =0
                 start_time = time.time()
 
-                batch_features = batch_features.to(device)
-                _=_.to(device)
+                batch = batch.to(device)
+                target = target.to(device)
 
-                features= model.obtain_latent_features(batch_features)#, batch, epoch)
-                outputs= classifier.forward(features)
-           #     print(outputs)
-             #   fsdfsd = np.argmax(outputs.cpu().numpy(), axis=1)
-            #    print(fsdfsd)
+                features= model.obtain_latent_features(batch)#, batch, epoch)
+                batch_loss,outputs = classifier.test_step(features, target)
+
                 y_pred.extend( np.argmax(outputs.cpu().numpy(), axis =1))
-                y_true.extend( np.argmax(_.cpu().numpy(), axis=1))
+                y_true.extend( np.argmax(target.cpu().numpy(), axis=1))
 
-                classifier_loss = classifier._get_loss(outputs, _)
-                
-                loss =classifier_loss.item()
-                test_loss +=loss
-                if batch%test_batch_thresh==0:
-                    current = batch*test_loader.batch_size
+                test_loss +=batch_loss
+                if batch_idx%test_batch_thresh==0:
+                    current = batch_idx*test_loader.batch_size
                     ms_per_batch = (time.time() -start_time)*1000
-                    print(f'| {batch:5d}/{test_num_batches:5d} batches | '
+                    print(f'| {batch_idx:5d}/{test_num_batches:5d} batches | '
                         f'ms/batch {ms_per_batch:5.2f} | '
-                        f'loss {loss:7f} |[{current:>5d}/{test_size:>5d}] |')
-                  
-                test_loss_list.append(loss)  
+                        f'loss {batch_loss:7f} |[{current:>5d}/{test_size:>5d}] |') 
    
             print("####################################################################")
        
@@ -126,16 +125,13 @@ def classifier_testing_loop(classifier, test_loader):
             print("epoch: {}/{}, test loss = {:.6f}".format(epoch+1, num_epochs, 
                                     final_test_loss))
       
-    return test_loss_list, y_pred, y_true
+    return y_pred, y_true
 
-dr_test_loss, dr_y_pred, dr_y_true = classifier_testing_loop(dr_classifier, dr_test_loader)
-qual_test_loss, qual_y_pred, qual_y_true = classifier_testing_loop(qual_classifier, qual_test_loader)
+dr_y_pred, dr_y_true = classifier_testing_loop(dr_classifier, dr_test_loader)
+qual_y_pred, qual_y_true = classifier_testing_loop(qual_classifier, qual_test_loader)
 
 
-plt.figure()
-plt.plot(dr_test_loss, label='test')
-plt.legend()
-plt.show()
+
 
 dr_classes = ('0', '1')
 
@@ -151,13 +147,6 @@ plt.show()
 print(cf_matrix)
 print(classification_report(dr_y_true, dr_y_pred))
 
-
-
-
-plt.figure()
-plt.plot(qual_test_loss, label='test')
-plt.legend()
-plt.show()
 
 classes = ('0', '1', '2')
 cf_matrix = confusion_matrix(qual_y_true, qual_y_pred)

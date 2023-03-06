@@ -25,13 +25,10 @@ save_path = r'/home/miplab/anomoly_detection/preprocessing_justin'
 num_epochs=50
 batch_size = 100
 lr = 0.001
-mean = [0.4114,0.2679,0.1820]
-std= [0.3016,0.2077,0.1654]
 
 transform = transforms.Compose([
     transforms.ToTensor(),
-    transforms.Resize(256),
-    transforms.Normalize(mean, std)
+    transforms.Resize(256)
 ])
 
 ############################# DR
@@ -74,14 +71,14 @@ qual_val_loader = DataLoader(qual_val_dataset, batch_size =32, shuffle = True, n
 
 
 model = Autoencoder(input_channels=3, input_resolution=256, hidden_layer_channels=[4,4,4,4],
-                     layer_repetitions=[4,4,4,4], conv_reduced_resolution=16, latent_dimension=200).to(device)
+                     layer_repetitions=[4,4,4,4], conv_reduced_resolution=16, latent_dimension=100).to(device)
 
-model.load_state_dict(torch.load( os.path.join(save_path, 'resnet_autoencoder_perceptual_loss_200_guideline.pth')))
+model.load_state_dict(torch.load( os.path.join(save_path, 'resnet_autoencoder.pth')))
 
 
 
-dr_classifier = ffn_classifier(latent_dim =200, num_classes=dr_classes_num, dropout_rate = 0.15).to(device)
-qual_classifier = ffn_classifier(latent_dim=200, num_classes=qual_classes_num, dropout_rate = 0.15).to(device)
+dr_classifier = ffn_classifier(latent_dim =100, num_classes=dr_classes_num, dropout_rate = 0.3).to(device)
+qual_classifier = ffn_classifier(latent_dim=100, num_classes=qual_classes_num, dropout_rate = 0.3).to(device)
 
 
 #print(model)
@@ -97,8 +94,8 @@ print(qual_classifier)
 def classifier_training_loop(classifier, train_loader, val_loader):
     early_stopper = EarlyStopper(patience = 10, min_delta=10)
 
-    #opt_dict = model.configure_optimizers()
-
+    opt_dict = model.configure_optimizers()
+    classifier_opt_dict = classifier.configure_optimizers()
 
     train_loss_epoch = []
     val_loss_epoch = []
@@ -119,49 +116,62 @@ def classifier_training_loop(classifier, train_loader, val_loader):
        
         model.eval()
         classifier.train()
-        for batch_idx, (batch, target) in enumerate(train_loader):
+        for batch, (batch_features, _) in enumerate(train_loader):
             start_time = time.time()
 
-            batch = batch.to(device)
-            target = target.to(device)
+            batch_features = batch_features.to(device)
+            _ = _.to(device)
 
-            features = model.obtain_latent_features(batch)#, batch_idx, epoch)
-            batch_loss = classifier.training_step(features, target)
+            opt_dict['optimizer'].zero_grad()  
+            classifier_opt_dict['optimizer'].zero_grad()
+
+            features = model.obtain_latent_features(batch_features)#, batch, epoch)
+            outputs = classifier(features)
             
-            train_loss +=batch_loss
+            classifier_loss = classifier._get_loss(outputs, _)
+            loss =classifier_loss.item()
+            train_loss += loss
 
-            if batch_idx%train_batch_thresh==0:
-                current = batch_idx*train_loader.batch_size
+            classifier_loss.backward() 
+            classifier_opt_dict["optimizer"].step()
+
+            if batch%train_batch_thresh==0:
+                current = batch*train_loader.batch_size
                 ms_per_batch = (time.time() -start_time)*1000
-                print(f'| {batch_idx:5d}/{train_num_batches:5d} batches | '
+                print(f'| {batch:5d}/{train_num_batches:5d} batches | '
                     f'ms/batch {ms_per_batch:5.2f} | '
-                    f'loss {batch_loss:7f} |[{current:>5d}/{train_size:>5d}] |'
-                    f'learning rate {classifier.opt_dict["optimizer"].param_groups[0]["lr"]:7f}')
+                    f'loss {loss:7f} |[{current:>5d}/{train_size:>5d}] |'
+                    f'learning rate {classifier_opt_dict["optimizer"].param_groups[0]["lr"]:7f}')
 
         
         model.eval()
         classifier.eval()
         with torch.no_grad():
-            for batch_idx, (batch, target) in enumerate(val_loader):
+            for batch, (batch_features, _) in enumerate(val_loader):
                 start_time = time.time()
 
-                batch = batch.to(device)
-                target= target.to(device)
+                batch_features = batch_features.to(device)
+                _=_.to(device)
 
-                features = model.obtain_latent_features(batch)#, batch_idx, epoch)
-                batch_loss = classifier.validation_step(features, target)
+                features = model.obtain_latent_features(batch_features)#, batch, epoch)
+                outputs = classifier(features)
+                classifier_loss = classifier._get_loss(outputs, _)
 
-                val_loss +=batch_loss
-                if batch_idx%val_batch_thresh==0:
-                    current = batch_idx*val_loader.batch_size
+
+                loss =classifier_loss.item()
+                val_loss +=loss
+                if batch%val_batch_thresh==0:
+                    current = batch*val_loader.batch_size
                     ms_per_batch = (time.time() -start_time)*1000
-                    print(f'| {batch_idx:5d}/{val_num_batches:5d} batches | '
+                    print(f'| {batch:5d}/{val_num_batches:5d} batches | '
                         f'ms/batch {ms_per_batch:5.2f} | '
-                        f'loss {batch_loss:7f} |[{current:>5d}/{val_size:>5d}] |'
-                        f' learning rate {classifier.opt_dict["optimizer"].param_groups[0]["lr"]}')
+                        f'loss {loss:7f} |[{current:>5d}/{val_size:>5d}] |'
+                        f' learning rate {classifier_opt_dict["optimizer"].param_groups[0]["lr"]}')
 
         #        if early_stopper.early_stop(loss):
         #            break
+  
+
         print("####################################################################")
 
 
@@ -169,8 +179,8 @@ def classifier_training_loop(classifier, train_loader, val_loader):
         val_loss = val_loss/val_num_batches
 
 
-        learning_rate.append(classifier.opt_dict["optimizer"].param_groups[0]["lr"])
-        classifier.opt_dict["lr_scheduler"].step(val_loss)
+        learning_rate.append(classifier_opt_dict["optimizer"].param_groups[0]["lr"])
+        classifier_opt_dict["lr_scheduler"].step(val_loss)
 
         print("epoch: {}/{}, train loss = {:.10f}   val loss = {:.10f}".format(epoch+1, num_epochs, 
                                     train_loss, val_loss))
@@ -186,8 +196,8 @@ def classifier_training_loop(classifier, train_loader, val_loader):
 dr_train_loss, dr_val_loss ,dr_lr= classifier_training_loop(dr_classifier, dr_train_loader, dr_val_loader)
 qual_train_loss, qual_val_loss, qual_lr = classifier_training_loop(qual_classifier, qual_train_loader, qual_val_loader)
 
-torch.save(dr_classifier.state_dict(), os.path.join(save_path, 'dr_classifier_perceptual_loss_200_batchnorm.pth'))
-torch.save(qual_classifier.state_dict(), os.path.join(save_path, 'qual_classifier_perceptual_loss_200_batchnorm.pth'))
+torch.save(dr_classifier.state_dict(), os.path.join(save_path, 'dr_classifier.pth'))
+torch.save(qual_classifier.state_dict(), os.path.join(save_path, 'qual_classifier.pth'))
 
 
 plt.figure()
@@ -197,6 +207,11 @@ plt.legend()
 plt.show()
 
 
+plt.figure()
+plt.plot(qual_train_loss, label='train')
+plt.plot(qual_val_loss, label='val')
+plt.legend()
+plt.show()
 
 plt.figure()
 plt.plot(dr_lr, dr_train_loss, label='train')
@@ -205,12 +220,6 @@ plt.xlabel("learning rate")
 plt.legend()
 plt.show()
 
-
-plt.figure()
-plt.plot(qual_train_loss, label='train')
-plt.plot(qual_val_loss, label='val')
-plt.legend()
-plt.show()
 
 plt.figure()
 plt.plot(qual_lr, qual_train_loss, label='train')

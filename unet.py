@@ -7,10 +7,10 @@ import matplotlib.pyplot as plt
 from PIL import Image
 
 from loss_function import PerceptualLossNetwork
-from encoder import EncoderNetwork
-from decoder import DecoderNetwork
+from contracter import ContractingNet
+from expander import ExpandingNet
 
-class Autoencoder(nn.Module):
+class unet(nn.Module):
     def __init__(self,
                 input_channels: int,
                 input_resolution,
@@ -19,8 +19,8 @@ class Autoencoder(nn.Module):
                 conv_reduced_resolution,
                 latent_dimension:int,
 
-                encoder_class: object = EncoderNetwork,
-                decoder_class: object = DecoderNetwork,
+                encoder_class: object = ContractingNet,
+                decoder_class: object = ExpandingNet,
                 ):
     
         super().__init__()
@@ -28,10 +28,12 @@ class Autoencoder(nn.Module):
        # self.save_hyperparameters()
         #Creating encoder and decoder
 
-        self.encoder = EncoderNetwork(input_channels, input_resolution,  hidden_layer_channels, layer_repetitions,
+        self.encoder = encoder_class(input_channels, input_resolution,  hidden_layer_channels, layer_repetitions,
                         conv_reduced_resolution, latent_dimension)
-        hidden_layer_channels.reverse()
-        self.decoder = DecoderNetwork(input_channels, input_resolution, hidden_layer_channels, layer_repetitions,
+        hidden_layer_channels.reverse()  # need to reverse order of decoder part 
+        layer_repetitions.reverse()
+
+        self.decoder = decoder_class(input_channels, input_resolution, hidden_layer_channels, layer_repetitions,
                         conv_reduced_resolution, latent_dimension)
 
         #self.loss_fn = nn.MSELoss(reduction="none")
@@ -53,6 +55,7 @@ class Autoencoder(nn.Module):
         z = self.encoder(x)
         x_hat = self.decoder(z)
    
+
       #  if(batch_num==274) and (epoch == 199):
       #  if batch_num == :
       #      xx_hat= np.transpose(x_hat[0].cpu().detach().numpy(), (1,2,0))
@@ -140,5 +143,5 @@ class Autoencoder(nn.Module):
 
 
 if __name__ == '__main__':
-    x = Autoencoder(3,256, [64,128,256,512], [4,4,4,4],16, 100)
+    x = unet(3,256, [64,128,256,512], [3,3,3,3],16, 100)
     print(x)
